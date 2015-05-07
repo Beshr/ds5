@@ -1,0 +1,314 @@
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.Scanner;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.filecache.DistributedCache;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.FileInputFormat;
+import org.apache.hadoop.mapred.FileOutputFormat;
+import org.apache.hadoop.mapred.JobClient;
+import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.MapReduceBase;
+import org.apache.hadoop.mapred.OutputCollector;
+import org.apache.hadoop.mapred.Reducer;
+import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapred.TextOutputFormat;
+
+public class KMeans {
+
+	public static String outPath = "outputs";
+	public static String inPath = "inputs";
+	public static String centroidFileName = "/centers.txt";
+	public static String outFileName = "/part-00000";
+	public static String dataFileName = "/data.txt";
+	public static String jobName = "KMeans";
+
+	public static final String class1 = "Iris-setosa";
+	public static final String class2 = "Iris-versicolor";
+	public static final String class3 = "Iris-virginica";
+
+	// hold k-centers.
+	public static ArrayList<double[]> centers = new ArrayList<double[]>();
+
+	private static double getDistance(String p1, String p2) {
+		double[] p1Attrs = getDoubles(p1);
+		double[] p2Attrs = getDoubles(p2);
+
+		double dis = Math.sqrt(Math.pow(p1Attrs[0] - p2Attrs[0], 2)
+				+ Math.pow(p1Attrs[1] - p2Attrs[1], 2)
+				+ Math.pow(p1Attrs[2] - p2Attrs[2], 2)
+				+ Math.pow(p1Attrs[3] - p2Attrs[3], 2));
+		return dis;
+	};
+
+	private static double[] getDoubles(String s) {
+
+		String[] split = s.split(",");
+		double type = 0.0;
+		if (split[4].equals(class1))
+			type = 1.0;
+		else if (split[4].equals(class2))
+			type = 2.0;
+		else if (split[4].equals(class3))
+			type = 3.0;
+		if (type == 0.0) {
+			type = Double.parseDouble(split[4].trim());
+		}
+
+		return new double[] { Double.parseDouble(split[0]),
+				Double.parseDouble(split[1]), Double.parseDouble(split[2]),
+				Double.parseDouble(split[3]), type };
+
+	}
+
+	
+	public static class Map extends MapReduceBase implements
+			org.apache.hadoop.mapred.Mapper<LongWritable, Text, Text, Text> {
+
+		@Override
+		public void configure(JobConf job) {
+			// fetch centers file from distributed cache
+			try {
+				Path[] cacheFiels = DistributedCache.getLocalCacheFiles(job);
+				if (cacheFiels != null && cacheFiels.length > 0) {
+					centers.clear();// clear any old centers
+					// read the centers file to get stored centers
+					Scanner sc = new Scanner(new File(cacheFiels[0].toString()));
+					while (sc.hasNextLine()) {
+						double[] vals = getDoubles(sc.nextLine());
+						centers.add(vals);
+					}
+
+					sc.close();// close scanner
+				} else
+					System.out.println("No cache files exists");
+			} catch (Exception e) {
+				System.err.println("Error in configure Method");
+			}
+		}
+
+		@Override
+		public void map(LongWritable key, Text text,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// get entry data
+			String line = text.toString();
+			String[] attributes = line.split(",");
+
+			double atr0 = Double.parseDouble(attributes[0]);
+			double atr1 = Double.parseDouble(attributes[1]);
+			double atr2 = Double.parseDouble(attributes[2]);
+			double atr3 = Double.parseDouble(attributes[3]);
+
+			// get min distance between point and centers
+			double minDist = Double.MAX_VALUE;
+			String nearstCenter = "";
+			for (int i = 0; i < centers.size(); i++) {
+				double[] centerAttr = centers.get(i);
+				double dist = Math.sqrt(Math.pow(atr0 - centerAttr[0], 2)
+						+ Math.pow(atr1 - centerAttr[1], 2)
+						+ Math.pow(atr2 - centerAttr[2], 2)
+						+ Math.pow(atr3 - centerAttr[3], 2));
+				if (dist < minDist) {
+					nearstCenter = centerAttr[0] + "," + centerAttr[1] + ","
+							+ centerAttr[2] + "," + centerAttr[3] + ","
+							+ centerAttr[4];
+					minDist = dist;
+				}
+			}
+			// pass the result to reducer as <center near the point,point>
+			output.collect(new Text(nearstCenter), new Text(line));
+		}
+	}
+
+	/**
+	 * 
+	 * @author mohamed Reducer class
+	 */
+
+	public static class Reduce extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		@Override
+		public void reduce(Text key, Iterator<Text> values,
+				OutputCollector<Text, Text> output, Reporter r)
+				throws IOException {
+
+			/*
+			 * // calculating new center for the input points. double[] attrs =
+			 * getDoubles(key.toString());
+			 */int total = 0;// total number of points
+			// //////////////// arg3 7sab el key m3aya wfl map arturn 0,0
+			// attributes for new center
+			double new0 = 0;
+			double new1 = 0;
+			double new2 = 0;
+			double new3 = 0;
+
+			StringBuilder points = new StringBuilder();
+			points.append(',');
+			// loop on points to get their mean
+			while (values.hasNext()) {
+				String entry = values.next().toString();
+				double[] pointAttrs = getDoubles(entry);
+				new0 += pointAttrs[0];
+				new1 += pointAttrs[1];
+				new2 += pointAttrs[2];
+				new3 += pointAttrs[3];
+				total++;
+
+				points.append(Arrays.toString(pointAttrs));
+				points.append('|');
+			}
+			String newCenter = "";
+			if (total != 0) {
+				new0 /= total;
+				new1 /= total;
+				new2 /= total;
+				new3 /= total;
+				newCenter = new0 + "," + new1 + "," + new2 + "," + new3 + ","
+						+ getDoubles(key.toString())[4];
+			} else
+				newCenter = key.toString();
+			output.collect(new Text(newCenter), new Text(points.toString()));
+		}
+
+	}
+
+	public static void main(String[] args) {
+		long before = System.currentTimeMillis();
+		run(args);
+		long after = System.currentTimeMillis();
+		System.out.println((after-before)/1000);
+	}
+
+	public static void run(String[] args) {
+		inPath = args[0];
+		outPath = args[1];
+		String input = inPath;
+		String output = outPath + System.nanoTime();
+		String again_input = output;
+
+		// Reiterating till convergence
+		int iterations = 0;
+		boolean finish = false;
+		while (!finish) {
+			JobConf conf = new JobConf(KMeans.class);
+
+			// detect the iteration number to choose the centers file
+			Path hdfsPath;
+			if (iterations == 0)
+				hdfsPath = new Path(input + centroidFileName);
+			else
+				hdfsPath = new Path(again_input + outFileName);
+			DistributedCache.addCacheFile(hdfsPath.toUri(), conf);
+
+			conf.setJobName(jobName);
+			conf.setMapOutputKeyClass(Text.class);
+			conf.setMapOutputValueClass(Text.class);
+			conf.setOutputKeyClass(Text.class);
+			conf.setOutputValueClass(Text.class);
+			conf.setMapperClass(Map.class);
+			conf.setReducerClass(Reduce.class);
+			conf.setInputFormat(TextInputFormat.class);
+			conf.setOutputFormat(TextOutputFormat.class);
+
+			FileInputFormat.setInputPaths(conf, new Path(input + dataFileName));
+			FileOutputFormat.setOutputPath(conf, new Path(output));
+
+			try {
+				JobClient.runJob(conf);
+
+				/*
+				 * Reading new centers, old centers to determine convergence and
+				 * stop iterations
+				 */
+				Path newCentersFile = new Path(output + outFileName);
+				FileSystem fs = FileSystem.get(new Configuration());
+
+				Scanner sc = new Scanner(fs.open(newCentersFile));
+				ArrayList<String> newCenters = new ArrayList<String>();
+				while (sc.hasNextLine())
+					newCenters.add(sc.nextLine());
+
+				sc.close();
+
+				String prev;
+				if (iterations == 0)
+					prev = input + centroidFileName;
+				else
+					prev = again_input + outFileName;
+				Path prevFile = new Path(prev);
+				FileSystem fs2 = FileSystem.get(new Configuration());
+				Scanner sc2 = new Scanner(fs2.open(prevFile));
+				ArrayList<String> oldCenter = new ArrayList<String>();
+				while (sc2.hasNextLine())
+					oldCenter.add(sc2.nextLine());
+				sc2.close();
+
+				// ArrayList<Double> c1 = new ArrayList<Double>();
+				// // compare for convergence
+				// for (int i = 0; i < oldCenter.size(); i++) {
+				// c1.add(getDistance("0,0,0,0,0", oldCenter.get(i)));
+				// }
+				//
+				// ArrayList<Double> c2 = new ArrayList<Double>();
+				// // compare for convergence
+				// for (int i = 0; i < newCenters.size(); i++) {
+				// c2.add(getDistance("0,0,0,0,0", newCenters.get(i)));
+				// }
+				//
+				// // Collections.sort(c1);
+				// // Collections.sort(c2);
+				//
+				// for (int i = 0; i < newCenters.size(); i++) {
+				// if (Math.abs(c1.get(i) - c2.get(i)) <= 0.1) {
+				// finish = true;
+				// } else {
+				// finish = false;
+				// break;
+				// }
+				// }
+				boolean[] converged = new boolean[3];
+
+				for (int i = 0; i < oldCenter.size(); i++) {
+					String p1 = oldCenter.get(i);
+					double type = getDoubles(p1)[4];
+					for (int j = 0; j < newCenters.size(); j++) {
+						String p2 = newCenters.get(j);
+						double type2 = getDoubles(p2)[4];
+						if (type == type2) {
+							if (getDistance(p1, p2) <= .1)
+								converged[i] = true;
+							break;
+						}
+					}
+				}
+				byte count = 0;
+				for (boolean b : converged) {
+					if (b == true)
+						count++;
+				}
+				if (count == 3)
+					finish = true;
+				iterations++;
+				again_input = output;
+				output = outPath + System.nanoTime();
+
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+	}
+}
